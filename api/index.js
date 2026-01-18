@@ -26,6 +26,9 @@ app.get('/', (req, res) => {
 app.post('/api/generate-todos', async (req, res) => {
   try {
     const { sessionType, sessionDate, sessionNotes } = req.body;
+    
+    console.log('anthropic object:', anthropic);
+    console.log('anthropic.messages:', anthropic.messages);
 
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
