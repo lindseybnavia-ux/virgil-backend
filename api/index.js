@@ -9,9 +9,15 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+console.log('API Key exists:', !!process.env.ANTHROPIC_API_KEY);
+console.log('API Key length:', process.env.ANTHROPIC_API_KEY?.length);
+console.log('Anthropic constructor:', typeof Anthropic);
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+console.log('Anthropic client created:', !!anthropic);
 
 app.get('/', (req, res) => {
   res.json({ status: 'Virgil Backend API is running' });
