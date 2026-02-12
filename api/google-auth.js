@@ -8,7 +8,7 @@ module.exports = async (req, res) => {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
+    'https://virgil-backend-theta.vercel.app/api/google-callback'
   );
 
   // Pass the Firebase userId through state so we can associate tokens after callback
