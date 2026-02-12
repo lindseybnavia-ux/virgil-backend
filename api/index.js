@@ -3,6 +3,21 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 require('dotenv').config();
 
+const { google } = require('googleapis');
+const admin = require('firebase-admin');
+
+// Initialize Firebase Admin SDK
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+    })
+  });
+}
+const db = admin.firestore();
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -145,6 +160,250 @@ Return a JSON object with this exact structure:
   } catch (error) {
     console.error('Error generating insights:', error);
     res.status(500).json({ error: 'Failed to generate insights' });
+  }
+});
+
+// ─── Google Calendar: Start OAuth Flow ───
+app.get('/api/google-auth', (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId parameter' });
+  }
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    'https://virgil-backend-theta.vercel.app/api/google-callback'
+  );
+
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: ['https://www.googleapis.com/auth/calendar.events'],
+    prompt: 'consent',
+    state: userId
+  });
+
+  res.redirect(authUrl);
+});
+
+// ─── Google Calendar: OAuth Callback ───
+app.get('/api/google-callback', async (req, res) => {
+  const { code, state: userId, error } = req.query;
+
+  if (error) {
+    return res.redirect('https://tryvirgil.co/?google_calendar=denied');
+  }
+
+  if (!code || !userId) {
+    return res.status(400).json({ error: 'Missing code or userId' });
+  }
+
+  try {
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      'https://virgil-backend-theta.vercel.app/api/google-callback'
+    );
+
+    const { tokens } = await oauth2Client.getToken(code);
+
+    await db.collection('google_tokens').doc(userId).set({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expiry_date: tokens.expiry_date,
+      token_type: tokens.token_type,
+      scope: tokens.scope,
+      connected_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.redirect('https://tryvirgil.co/?google_calendar=connected');
+  } catch (err) {
+    console.error('Google OAuth callback error:', err);
+    res.redirect('https://tryvirgil.co/?google_calendar=error');
+  }
+});
+
+// ─── Google Calendar: Create/Delete/Update Events & Status Check ───
+app.post('/api/google-calendar', async (req, res) => {
+  const { userId, action } = req.body || {};
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+
+  // Get authenticated client
+  let oauth2Client;
+  try {
+    const tokenDoc = await db.collection('google_tokens').doc(userId).get();
+
+    if (!tokenDoc.exists) {
+      return res.status(401).json({
+        error: 'NOT_CONNECTED',
+        message: 'Google Calendar is not connected. Please connect your account.'
+      });
+    }
+
+    const tokens = tokenDoc.data();
+
+    oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      'https://virgil-backend-theta.vercel.app/api/google-callback'
+    );
+
+    oauth2Client.setCredentials({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expiry_date: tokens.expiry_date
+    });
+
+    // Refresh token if expired
+    const now = Date.now();
+    if (tokens.expiry_date && now >= tokens.expiry_date - 300000) {
+      try {
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        oauth2Client.setCredentials(credentials);
+        await db.collection('google_tokens').doc(userId).update({
+          access_token: credentials.access_token,
+          expiry_date: credentials.expiry_date
+        });
+      } catch (refreshError) {
+        console.error('Token refresh failed:', refreshError);
+        await db.collection('google_tokens').doc(userId).delete();
+        return res.status(401).json({
+          error: 'TOKEN_EXPIRED',
+          message: 'Your Google Calendar connection has expired. Please reconnect.'
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Auth error:', err);
+    return res.status(500).json({ error: 'Authentication failed' });
+  }
+
+  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+  try {
+    // ── STATUS CHECK ──
+    if (action === 'status') {
+      return res.status(200).json({ connected: true, message: 'Google Calendar is connected' });
+    }
+
+    // ── CREATE EVENTS ──
+    if (action === 'create') {
+      const { todos, sessionType } = req.body;
+
+      if (!todos || !Array.isArray(todos) || todos.length === 0) {
+        return res.status(400).json({ error: 'No action items provided' });
+      }
+
+      const results = [];
+      for (const todo of todos) {
+        const event = {
+          summary: `✅ ${todo.title}`,
+          description: [
+            todo.description,
+            '',
+            `Priority: ${{ high: '🔴', medium: '🟡', low: '🟢' }[todo.priority] || ''} ${todo.priority}`,
+            sessionType ? `Session: ${sessionType}` : '',
+            '',
+            '— Created by Virgil'
+          ].filter(Boolean).join('\n'),
+          start: { date: todo.dueDate },
+          end: { date: todo.dueDate },
+          reminders: {
+            useDefault: false,
+            overrides: [{ method: 'popup', minutes: 540 }]
+          }
+        };
+
+        const created = await calendar.events.insert({
+          calendarId: 'primary',
+          requestBody: event
+        });
+
+        results.push({
+          todoId: todo.id,
+          googleEventId: created.data.id,
+          htmlLink: created.data.htmlLink
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `${results.length} event(s) added to Google Calendar`,
+        events: results
+      });
+    }
+
+    // ── DELETE EVENT ──
+    if (action === 'delete') {
+      const { googleEventId } = req.body;
+
+      if (!googleEventId) {
+        return res.status(400).json({ error: 'Missing googleEventId' });
+      }
+
+      await calendar.events.delete({
+        calendarId: 'primary',
+        eventId: googleEventId
+      });
+
+      return res.status(200).json({ success: true, message: 'Event removed from Google Calendar' });
+    }
+
+    // ── UPDATE EVENT ──
+    if (action === 'update') {
+      const { todo, sessionType, googleEventId } = req.body;
+
+      if (!googleEventId || !todo) {
+        return res.status(400).json({ error: 'Missing googleEventId or todo data' });
+      }
+
+      const event = {
+        summary: `✅ ${todo.title}`,
+        description: [
+          todo.description,
+          '',
+          `Priority: ${{ high: '🔴', medium: '🟡', low: '🟢' }[todo.priority] || ''} ${todo.priority}`,
+          sessionType ? `Session: ${sessionType}` : '',
+          '',
+          '— Created by Virgil'
+        ].filter(Boolean).join('\n'),
+        start: { date: todo.dueDate },
+        end: { date: todo.dueDate }
+      };
+
+      const updated = await calendar.events.update({
+        calendarId: 'primary',
+        eventId: googleEventId,
+        requestBody: event
+      });
+
+      return res.status(200).json({
+        success: true,
+        googleEventId: updated.data.id,
+        htmlLink: updated.data.htmlLink
+      });
+    }
+
+    return res.status(400).json({ error: 'Invalid action. Use: create, delete, update, or status' });
+
+  } catch (err) {
+    console.error('Google Calendar API error:', err);
+
+    if (err.code === 401 || err.code === 403) {
+      await db.collection('google_tokens').doc(userId).delete();
+      return res.status(401).json({
+        error: 'TOKEN_EXPIRED',
+        message: 'Google Calendar access was revoked. Please reconnect.'
+      });
+    }
+
+    return res.status(500).json({
+      error: 'CALENDAR_ERROR',
+      message: 'Failed to sync with Google Calendar. Please try again.'
+    });
   }
 });
 
