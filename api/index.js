@@ -173,7 +173,7 @@ app.get('/api/google-auth', (req, res) => {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    'https://virgil-backend-theta.vercel.app/api/google-callback'
+    'https://virgil-backend-psi.vercel.app/api/google-callback'
   );
 
   const authUrl = oauth2Client.generateAuthUrl({
@@ -202,7 +202,7 @@ app.get('/api/google-callback', async (req, res) => {
     const oauth2Client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      'https://virgil-backend-theta.vercel.app/api/google-callback'
+      'https://virgil-backend-psi.vercel.app/api/google-callback'
     );
 
     const { tokens } = await oauth2Client.getToken(code);
@@ -248,7 +248,7 @@ app.post('/api/google-calendar', async (req, res) => {
     oauth2Client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      'https://virgil-backend-theta.vercel.app/api/google-callback'
+      'https://virgil-backend-psi.vercel.app/api/google-callback'
     );
 
     oauth2Client.setCredentials({
