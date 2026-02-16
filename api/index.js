@@ -407,4 +407,20 @@ app.post('/api/google-calendar', async (req, res) => {
   }
 });
 
+// ─── Google Calendar: Disconnect ───
+app.post('/api/google-disconnect', async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+
+  try {
+    await db.collection('google_tokens').doc(userId).delete();
+    return res.status(200).json({ success: true, message: 'Google Calendar disconnected' });
+  } catch (err) {
+    console.error('Disconnect error:', err);
+    return res.status(500).json({ error: 'Failed to disconnect' });
+  }
+});
 module.exports = app;
