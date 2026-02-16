@@ -423,4 +423,39 @@ app.post('/api/google-disconnect', async (req, res) => {
     return res.status(500).json({ error: 'Failed to disconnect' });
   }
 });
+
+// ─── Identify Core Theme ───
+app.post('/api/identify-theme', async (req, res) => {
+  const { sessionType, notes } = req.body;
+
+  if (!notes) {
+    return res.status(400).json({ error: 'Missing notes' });
+  }
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 150,
+        messages: [{
+          role: 'user',
+          content: `Based on these ${sessionType} session notes, identify the core theme in one clear, specific sentence. Be insightful, not generic. Just return the sentence, nothing else.\n\nNotes: ${notes}`
+        }]
+      })
+    });
+
+    const data = await response.json();
+    const theme = data.content[0].text.trim();
+    res.json({ theme });
+  } catch (error) {
+    console.error('Error identifying theme:', error);
+    res.status(500).json({ error: 'Failed to identify theme' });
+  }
+});
 module.exports = app;
